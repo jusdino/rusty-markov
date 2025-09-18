@@ -3,6 +3,7 @@ use std::env;
 use std::io;
 
 use rusty_markov::train::train_with_stream;
+use rusty_markov::babble::babble;
 
 
 fn main() {
@@ -16,14 +17,14 @@ fn main() {
 }
 
 /// Reads lines from stdin
-pub fn read_stdin_lines() -> HashMap<String, HashMap<String, u32>> {
+pub fn read_stdin_lines() {
     let stdin = io::stdin().lock();
 
     let mut probability = HashMap::new();
 
     probability = train_with_stream(stdin, probability);
 
-    println!("{} n-grams trained with corpus", probability.iter().count());
+    eprintln!("{} n-grams trained with corpus", probability.iter().count());
 
-    probability
+    babble(&probability, 30);
 }
