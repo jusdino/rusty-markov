@@ -27,7 +27,7 @@ use crate::tokenize::tokenize;
 /// ");
 /// 
 /// let mut probability = HashMap::new();
-/// probability = train_with_stream(input, probability);
+/// train_with_stream(input, &mut probability);
 /// 
 /// assert_eq!(
 ///     probability,
@@ -71,15 +71,15 @@ use crate::tokenize::tokenize;
 ///     ])
 /// )
 /// ```
-pub fn train_with_stream<'a, R: BufRead>(
-    input: R, mut probabilities: HashMap<String, HashMap<String, u32>>
-) -> HashMap<String, HashMap<String, u32>> {
+pub fn train_with_stream<R: BufRead>(
+    input: R, probabilities: &mut HashMap<String, HashMap<String, u32>>
+) -> &mut HashMap<String, HashMap<String, u32>> {
 
     for line_res in input.lines() {
         match line_res {
             Ok(line) => {
                 let tokens = tokenize(&line);
-                probabilities = train_with_tokens(tokens, probabilities)
+                train_with_tokens(tokens, probabilities);
             },
             Err(e) => {
                 eprintln!("Error reading line: {}", e);
@@ -125,7 +125,7 @@ pub fn train_with_stream<'a, R: BufRead>(
 ///     String::from("man.")
 /// ];
 /// 
-/// let probabilities = train_with_tokens(tokens, probabilities);
+/// train_with_tokens(tokens, &mut probabilities);
 /// 
 /// assert_eq!(
 ///     probabilities,
@@ -140,8 +140,8 @@ pub fn train_with_stream<'a, R: BufRead>(
 /// );
 /// ```
 pub fn train_with_tokens(
-    tokens: Vec<String>, mut probabilities: HashMap<String, HashMap<String, u32>>
-) -> HashMap<String, HashMap<String, u32>> {
+    tokens: Vec<String>, probabilities: &mut HashMap<String, HashMap<String, u32>>
+) -> &mut HashMap<String, HashMap<String, u32>> {
     let mut tokens_iter = tokens.iter();
 
     // Get the first token
