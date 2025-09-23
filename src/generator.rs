@@ -13,18 +13,21 @@ pub struct MarkovGenerator {
 }
 
 /// Generates text, based on its traniing data, following a "markov chain" process
-/// 
+///
 /// # Examples
 /// ```rust
+/// use std::io::Cursor;
+/// use rusty_markov::MarkovGenerator;
+///
 /// let mut generator = MarkovGenerator::new();
 /// // This should force a predictable generation loop, since there is only one transition available
 /// // to each token
 /// let input = Cursor::new("start middle end start middle end");
 /// generator.train(input);
-/// 
+///
 /// // Collect 5 tokens
 /// let tokens: Vec<String> = generator.take(5).collect();
-/// 
+///
 /// // Should be able to generate a chain
 /// assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
 /// ```
@@ -58,9 +61,9 @@ impl MarkovGenerator {
                 }
             };
 
-            let (probs, tokens) = decompose_probabilities(next_transition_counts);
+            let (counts, tokens) = decompose_transitions(next_transition_counts);
 
-            let dist = match WeightedIndex::new(probs) {
+            let dist = match WeightedIndex::new(counts) {
                 Ok(dist) => dist,
                 Err(e) => {
                     // This could happen if weights are empty, all zero, or other invalid conditions
@@ -102,6 +105,20 @@ impl Iterator for MarkovGenerator {
     }
 }
 
+/// Decompose next_token transitions into a pair of arrays, ready for use in the rand lib
+fn decompose_transitions(trans_map: &HashMap<String, u32>) -> (Vec<u32>, Vec<&String>) {
+    let mut counts= Vec::new();
+    let mut tokens = Vec::new();
+
+    for (k, v) in trans_map.iter() {
+        tokens.push(k);
+        counts.push(*v);
+    }
+
+    (counts, tokens)
+}
+
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -114,17 +131,17 @@ mod tests {
         // to each token
         let input = Cursor::new("start middle end start middle end");
         generator.train(input);
-        
+
         // Collect 5 tokens
         let tokens: Vec<String> = generator.take(5).collect();
-        
+
         // Should be able to generate a chain
         assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
-        
+
         // Each token should be one of our expected tokens
         let expected_tokens = ["start", "middle", "end"];
         for token in &tokens {
-            assert!(expected_tokens.contains(&token.as_str()), 
+            assert!(expected_tokens.contains(&token.as_str()),
                     "Token '{}' should be one of {:?}", token, expected_tokens);
         }
     }
@@ -133,7 +150,7 @@ mod tests {
     fn test_generator_empty_training() {
         let mut generator = MarkovGenerator::new();
         // No training data
-        
+
         // Should return None immediately
         let first_token = generator.next();
         assert!(first_token.is_none(), "Should return None with no training data");
@@ -144,7 +161,7 @@ mod tests {
         let mut generator = MarkovGenerator::new();
         let input = Cursor::new("lonely lonely");
         generator.train(input);
-        
+
         // Should generate the single token repeatedly (self-loop)
         let tokens: Vec<String> = generator.take(5).collect();
         assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
@@ -158,43 +175,30 @@ mod tests {
         let mut generator = MarkovGenerator::new();
         let input = Cursor::new("start deadend");
         generator.train(input);
-        
+
         // Should generate start, then deadend, then stop
         let tokens: Vec<String> = generator.take(10).collect();
-        
+
         assert!(tokens.len() <= 2, "Should stop at deadend token");
         assert!(tokens.len() >= 1, "Should have at least one token");
-        
+
         // First token should be either "start" or "deadend" (randomly chosen)
         assert!(
-            tokens[0] == "start" || tokens[0] == "deadend", 
+            tokens[0] == "start" || tokens[0] == "deadend",
             "First token should be either 'start' or 'deadend', got: {}", tokens[0]
         );
-        
+
         match tokens.len() {
             // If we have one token, the first should be "deadend"
-            0 => {
+            1 => {
                 assert_eq!(tokens[0], "deadend", "First token should be deadend");
             },
             // If we have two tokens the first should be "start", second should be "deadend"
-            1 => {
+            2 => {
                 assert_eq!(tokens[0], "start", "First token should be start");
                 assert_eq!(tokens[1], "deadend", "Second token should be deadend");
             },
-            _ => panic!("tokens length should be 1 or 2!")
+            i => panic!("tokens length should be 1 or 2, received {}", i)
         }
     }
 }
-
-fn decompose_probabilities(prob_map: &HashMap<String, u32>) -> (Vec<u32>, Vec<&String>) {
-    let mut probs = Vec::new();
-    let mut tokens = Vec::new();
-
-    for (k, v) in prob_map.iter() {
-        tokens.push(k);
-        probs.push(*v);
-    }
-
-    (probs, tokens)
-}
-
