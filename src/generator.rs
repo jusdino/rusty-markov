@@ -1,15 +1,16 @@
 use std::{collections::HashMap, io::BufRead};
 use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
-use rand::seq::IteratorRandom;
 
+use crate::token::Token;
 use crate::train::train_with_stream;
+use crate::transitions::Transitions;
 
 
 pub struct MarkovGenerator {
-    token_transitions: HashMap<String, HashMap<String, u32>>,
+    token_transitions: Transitions,
     rng: rand::rngs::ThreadRng,
-    last_token: Option<String>,
+    last_token: Token,
 }
 
 /// Generates text, based on its traniing data, following a "markov chain" process
@@ -22,21 +23,21 @@ pub struct MarkovGenerator {
 /// let mut generator = MarkovGenerator::new();
 /// // This should force a predictable generation loop, since there is only one transition available
 /// // to each token
-/// let input = Cursor::new("start middle end start middle end");
+/// let input = Cursor::new("start middle end");
 /// generator.train(input);
 ///
 /// // Collect 5 tokens
 /// let tokens: Vec<String> = generator.take(5).collect();
 ///
 /// // Should be able to generate a chain
-/// assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
+/// assert_eq!(tokens.len(), 3, "Should generate 3 tokens");
 /// ```
 impl MarkovGenerator {
     pub fn new() -> Self {
         Self {
-            token_transitions: HashMap::new(),
+            token_transitions: Transitions::new(),
             rng: rand::rng(),
-            last_token: None,
+            last_token: Token::Terminal,
         }
     }
 
@@ -44,41 +45,28 @@ impl MarkovGenerator {
         train_with_stream(input, &mut self.token_transitions);
     }
 
-    fn pick_first_token(&mut self) -> Option<&String> {
-        self.token_transitions
-            .keys()
-            // Pick a random key
-            .choose(&mut self.rng)
-    }
+    fn pick_next_token(&mut self) -> Option<&Token> {
+        let next_transition_counts = match self.token_transitions.next_tokens(&self.last_token) {
+            Some(p) => p,
+            None => {
+                // If last_token is not in our token_transitions, stop now
+                return None;
+            }
+        };
 
-    fn pick_next_token(&mut self) -> Option<&String> {
-        if let Some(last_token) = self.last_token.as_ref() {
-            let next_transition_counts = match self.token_transitions.get(last_token) {
-                Some(p) => p,
-                None => {
-                    // If last_token is not in our token_transitions, stop now
-                    return None;
-                }
-            };
+        let (counts, tokens) = decompose_transitions(next_transition_counts);
 
-            let (counts, tokens) = decompose_transitions(next_transition_counts);
+        let dist = match WeightedIndex::new(counts) {
+            Ok(dist) => dist,
+            Err(e) => {
+                // This could happen if weights are empty, all zero, or other invalid conditions
+                eprintln!("Warning: Failed to create weighted distribution: {:?}", e);
+                return None;
+            }
+        };
+        let next_token = tokens[dist.sample(&mut self.rng)];
 
-            let dist = match WeightedIndex::new(counts) {
-                Ok(dist) => dist,
-                Err(e) => {
-                    // This could happen if weights are empty, all zero, or other invalid conditions
-                    eprintln!("Warning: Failed to create weighted distribution: {:?}", e);
-                    return None;
-                }
-            };
-            let next_token = tokens[dist.sample(&mut self.rng)];
-
-            Some(next_token)
-        } else {
-            // If we don't have our first token, return None
-            return None;
-        }
-
+        Some(next_token)
     }
 }
 
@@ -86,27 +74,21 @@ impl Iterator for MarkovGenerator {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match &self.last_token {
-            // This is the first token
-            None => {
-                self.last_token = self.pick_first_token().map(String::from);
-            },
-            // This is after the first token
-            Some(_) => {
-                self.last_token = self.pick_next_token().map(String::from);
-            }
+        self.last_token = match self.pick_next_token() {
+            Some(token) => token.clone(),
+            None => Token::Terminal
         };
 
-        // Wrap up a new String for moving out
+        // Wrap up a new Token for moving out
         match &self.last_token {
-            None => None,
-            Some(token) => Some(token.clone())
+            Token::Token(value) => Some(value.clone()),
+            _ => None,
         }
     }
 }
 
 /// Decompose next_token transitions into a pair of arrays, ready for use in the rand lib
-fn decompose_transitions(trans_map: &HashMap<String, u32>) -> (Vec<u32>, Vec<&String>) {
+fn decompose_transitions(trans_map: &HashMap<Token, u32>) -> (Vec<u32>, Vec<&Token>) {
     let mut counts= Vec::new();
     let mut tokens = Vec::new();
 
@@ -129,7 +111,7 @@ mod tests {
         let mut generator = MarkovGenerator::new();
         // This should force a predictable generation loop, since there is only one transition available
         // to each token
-        let input = Cursor::new("start middle end start middle end");
+        let input = Cursor::new("1 2 3 4 5 6");
         generator.train(input);
 
         // Collect 5 tokens
@@ -139,7 +121,7 @@ mod tests {
         assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
 
         // Each token should be one of our expected tokens
-        let expected_tokens = ["start", "middle", "end"];
+        let expected_tokens = ["1", "2", "3", "4", "5"];
         for token in &tokens {
             assert!(expected_tokens.contains(&token.as_str()),
                     "Token '{}' should be one of {:?}", token, expected_tokens);
@@ -154,20 +136,6 @@ mod tests {
         // Should return None immediately
         let first_token = generator.next();
         assert!(first_token.is_none(), "Should return None with no training data");
-    }
-
-    #[test]
-    fn test_generator_single_token_training() {
-        let mut generator = MarkovGenerator::new();
-        let input = Cursor::new("lonely lonely");
-        generator.train(input);
-
-        // Should generate the single token repeatedly (self-loop)
-        let tokens: Vec<String> = generator.take(5).collect();
-        assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
-        for token in &tokens {
-            assert_eq!(token, "lonely", "All tokens should be 'lonely'");
-        }
     }
 
     #[test]
