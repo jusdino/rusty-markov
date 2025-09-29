@@ -5,15 +5,13 @@ edition = "2024"
 
 [dependencies]
 rand = "0.9.2"
+clap = { version = "4.4", features = ["derive"] }
 
 [features]
-default = ["memory-profiling"]
 memory-profiling = ["memuse"]
 
 [dependencies.memuse]
 version = "0.1"
 optional = true
 
-[profile.release]
-# Disable memory profiling for release builds
-features = []
+

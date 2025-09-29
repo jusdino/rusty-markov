@@ -1,7 +1,7 @@
 #[derive(Eq, Hash, Debug, Clone)]
 pub enum Token {
     Token(String),
-    Terminal,
+    Boundary,
 }
 
 #[cfg(feature = "memory-profiling")]
@@ -12,7 +12,7 @@ impl DynamicUsage for Token {
     fn dynamic_usage(&self) -> usize {
         match self {
             Token::Token(s) => s.capacity(),
-            Token::Terminal => std::mem::size_of::<Token>(),
+            Token::Boundary => std::mem::size_of::<Token>(),
         }
     }
     
@@ -32,7 +32,7 @@ impl PartialEq for Token {
     fn eq(&self, other: &Token) -> bool {
         match (self, other) {
             (Token::Token(s), Token::Token(o)) => s == o,
-            (Token::Terminal, Token::Terminal) => true,
+            (Token::Boundary, Token::Boundary) => true,
             _ => false,
         }
     }

@@ -75,7 +75,7 @@ impl Transitions {
 
     /// Get the Start transition counts
     pub fn start_tokens(&self) -> Option<&HashMap<Token, u32>> {
-        self.transitions.get(&Token::Terminal)
+        self.transitions.get(&Token::Boundary)
     }
 }
 

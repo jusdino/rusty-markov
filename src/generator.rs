@@ -5,9 +5,11 @@ use rand::distr::weighted::WeightedIndex;
 use crate::token::Token;
 use crate::train::train_with_stream;
 use crate::transitions::Transitions;
+use crate::BoundaryConfigs;
 
 
 pub struct MarkovGenerator {
+    boundary_config: BoundaryConfigs,
     token_transitions: Transitions,
     rng: rand::rngs::ThreadRng,
     last_token: Token,
@@ -18,9 +20,9 @@ pub struct MarkovGenerator {
 /// # Examples
 /// ```rust
 /// use std::io::Cursor;
-/// use rusty_markov::MarkovGenerator;
+/// use rusty_markov::{MarkovGenerator, BoundaryConfigs};
 ///
-/// let mut generator = MarkovGenerator::new();
+/// let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
 /// // This should force a predictable generation loop, since there is only one transition available
 /// // to each token
 /// let input = Cursor::new("start middle end");
@@ -33,16 +35,17 @@ pub struct MarkovGenerator {
 /// assert_eq!(tokens.len(), 3, "Should generate 3 tokens");
 /// ```
 impl MarkovGenerator {
-    pub fn new() -> Self {
+    pub fn new(boundary_config: BoundaryConfigs) -> Self {
         Self {
+            boundary_config,
             token_transitions: Transitions::new(),
             rng: rand::rng(),
-            last_token: Token::Terminal,
+            last_token: Token::Boundary,
         }
     }
 
     pub fn train<R: BufRead>(&mut self, input: R) {
-        train_with_stream(input, &mut self.token_transitions);
+        train_with_stream(input, &mut self.token_transitions, &self.boundary_config);
     }
 
     fn pick_next_token(&mut self) -> Option<&Token> {
@@ -76,7 +79,7 @@ impl Iterator for MarkovGenerator {
     fn next(&mut self) -> Option<Self::Item> {
         self.last_token = match self.pick_next_token() {
             Some(token) => token.clone(),
-            None => Token::Terminal
+            None => Token::Boundary
         };
 
         // Wrap up a new Token for moving out
@@ -108,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_generator_properties_chain() {
-        let mut generator = MarkovGenerator::new();
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
         // This should force a predictable generation loop, since there is only one transition available
         // to each token
         let input = Cursor::new("1 2 3 4 5 6");
@@ -130,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_generator_empty_training() {
-        let mut generator = MarkovGenerator::new();
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
         // No training data
 
         // Should return None immediately
@@ -140,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_generator_dead_end_token() {
-        let mut generator = MarkovGenerator::new();
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
         let input = Cursor::new("start deadend");
         generator.train(input);
 
