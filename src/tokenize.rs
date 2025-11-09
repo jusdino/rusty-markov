@@ -6,8 +6,8 @@ use crate::{token::Token, BoundaryConfigs};
 
 
 const SENTENCE_ENDINGS: [char; 3] = ['.', '!', '?'];
-const PUNCTUATION_ENDINGS: [char; 8] = ['.', '!', '?', ',', '"', '\'', '}', ')'];
-const PUNCTUATION_BEGININGS: [char; 4] = ['"', '\'', '{', '('];
+const PUNCTUATION_ENDINGS: [char; 10] = ['.', '!', '?', ',', ';', '"', '”', '\'', '}', ')'];
+const PUNCTUATION_BEGININGS: [char; 5] = ['"', '“', '\'', '{', '('];
 
 
 /// Takes an input line of text, returns the line broken up
@@ -42,7 +42,7 @@ fn split_out_sentence_boundaries(tokens: &mut Vec<Token>) {
                         let trimmed_value: String = value.chars().take(value.len() - 1).collect();
                         new_tokens.push(Token::Token(trimmed_value));
                     }
-                    new_tokens.push(Token::Boundary);
+                    new_tokens.push(Token::Boundary(String::from(last_char)));
                     insertions.push((i, new_tokens));
                 }
             }
@@ -144,7 +144,7 @@ mod tests {
             Token::from("of"),
             Token::from("a"),
             Token::from("man"),
-            Token::Boundary,
+            Token::Boundary(String::from(".")),
         ];
 
         assert_eq!(
@@ -185,7 +185,7 @@ mod tests {
         let expected: Vec<Token> = vec![
             Token::from("a"),
             Token::from("man"),
-            Token::Boundary,
+            Token::Boundary(String::from(".")),
         ];
 
         assert_eq!(
@@ -198,7 +198,7 @@ mod tests {
         let mut tokens = vec![Token::from(".")];
         split_out_sentence_boundaries(&mut tokens);
         let expected: Vec<Token> = vec![
-            Token::Boundary
+            Token::Boundary(String::from("."))
         ];
         assert_eq!(
             expected,
@@ -222,14 +222,14 @@ mod tests {
         let expected: Vec<Token> = vec![
             Token::from("(something)"),
             // First sentence boundary split
-            Token::Boundary,
+            Token::Boundary(String::from("?")),
             // Second sentence boundary split
             Token::from(".truly"),
-            Token::Boundary,
+            Token::Boundary(String::from("!")),
             Token::from(".odd"),
             // Second sentence boundary split
             Token::from("happening"),
-            Token::Boundary,
+            Token::Boundary(String::from(".")),
             Token::from("here.)"),
         ];
         assert_eq!(

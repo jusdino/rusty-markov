@@ -1,7 +1,7 @@
 #[derive(Eq, Hash, Debug, Clone)]
 pub enum Token {
     Token(String),
-    Boundary,
+    Boundary(String),
 }
 
 #[cfg(feature = "memory-profiling")]
@@ -32,7 +32,8 @@ impl PartialEq for Token {
     fn eq(&self, other: &Token) -> bool {
         match (self, other) {
             (Token::Token(s), Token::Token(o)) => s == o,
-            (Token::Boundary, Token::Boundary) => true,
+            // Consider all boundaries equal
+            (Token::Boundary(_), Token::Boundary(_)) => true,
             _ => false,
         }
     }

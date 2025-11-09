@@ -32,7 +32,8 @@ pub struct MarkovGenerator {
 /// let tokens: Vec<String> = generator.take(5).collect();
 ///
 /// // Should be able to generate a chain
-/// assert_eq!(tokens.len(), 3, "Should generate 3 tokens");
+/// // ["start", "middle", "end", "\n"]
+/// assert_eq!(tokens.len(), 4, "Should generate 3 tokens");
 /// ```
 impl MarkovGenerator {
     pub fn new(boundary_config: BoundaryConfigs) -> Self {
@@ -40,7 +41,7 @@ impl MarkovGenerator {
             boundary_config,
             token_transitions: Transitions::new(),
             rng: rand::rng(),
-            last_token: Token::Boundary,
+            last_token: Token::Boundary(String::from("")),
         }
     }
 
@@ -49,6 +50,7 @@ impl MarkovGenerator {
     }
 
     fn pick_next_token(&mut self) -> Option<&Token> {
+        eprintln!("Picking next token. last_token: {:?}", &self.last_token);
         let next_transition_counts = match self.token_transitions.next_tokens(&self.last_token) {
             Some(p) => p,
             None => {
@@ -59,6 +61,7 @@ impl MarkovGenerator {
 
         let (counts, tokens) = decompose_transitions(next_transition_counts);
 
+        eprintln!("Making random choice");
         let dist = match WeightedIndex::new(counts) {
             Ok(dist) => dist,
             Err(e) => {
@@ -69,6 +72,7 @@ impl MarkovGenerator {
         };
         let next_token = tokens[dist.sample(&mut self.rng)];
 
+        eprintln!("Returning {:?}", next_token);
         Some(next_token)
     }
 }
@@ -77,15 +81,26 @@ impl Iterator for MarkovGenerator {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // First check, if we've already returned a Boundary
+        if let Token::Boundary(value) = &self.last_token {
+            // Initial state is a special Boundary("") - ignore that case
+            eprintln!("last_token is a Boundary token");
+            if value != "" {
+                eprintln!("last_token Boundary is not empty");
+                return None
+            }
+        }
+
         self.last_token = match self.pick_next_token() {
             Some(token) => token.clone(),
-            None => Token::Boundary
+            None => Token::Boundary(String::from("\n"))
         };
 
         // Wrap up a new Token for moving out
         match &self.last_token {
             Token::Token(value) => Some(value.clone()),
-            _ => None,
+            // self.last_token is now a Boundary, so next iteration will return None
+            Token::Boundary(value) => Some(value.clone()),
         }
     }
 }
@@ -120,25 +135,23 @@ mod tests {
         // Collect 5 tokens
         let tokens: Vec<String> = generator.take(5).collect();
 
-        // Should be able to generate a chain
-        assert_eq!(tokens.len(), 5, "Should generate 5 tokens");
-
-        // Each token should be one of our expected tokens
-        let expected_tokens = ["1", "2", "3", "4", "5"];
-        for token in &tokens {
-            assert!(expected_tokens.contains(&token.as_str()),
-                    "Token '{}' should be one of {:?}", token, expected_tokens);
-        }
+        assert_eq!(
+            vec!["1", "2", "3", "4", "5"],
+            tokens,
+        );
     }
 
     #[test]
     fn test_generator_empty_training() {
-        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
         // No training data
 
         // Should return None immediately
-        let first_token = generator.next();
-        assert!(first_token.is_none(), "Should return None with no training data");
+        let tokens: Vec<String> = generator.collect();
+        assert_eq!(
+            vec!["\n"],
+            tokens
+        )
     }
 
     #[test]
@@ -150,26 +163,9 @@ mod tests {
         // Should generate start, then deadend, then stop
         let tokens: Vec<String> = generator.take(10).collect();
 
-        assert!(tokens.len() <= 2, "Should stop at deadend token");
-        assert!(tokens.len() >= 1, "Should have at least one token");
-
-        // First token should be either "start" or "deadend" (randomly chosen)
-        assert!(
-            tokens[0] == "start" || tokens[0] == "deadend",
-            "First token should be either 'start' or 'deadend', got: {}", tokens[0]
+        assert_eq!(
+            vec!["start", "deadend", "\n"],
+            tokens
         );
-
-        match tokens.len() {
-            // If we have one token, the first should be "deadend"
-            1 => {
-                assert_eq!(tokens[0], "deadend", "First token should be deadend");
-            },
-            // If we have two tokens the first should be "start", second should be "deadend"
-            2 => {
-                assert_eq!(tokens[0], "start", "First token should be start");
-                assert_eq!(tokens[1], "deadend", "Second token should be deadend");
-            },
-            i => panic!("tokens length should be 1 or 2, received {}", i)
-        }
     }
 }

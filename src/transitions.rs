@@ -70,12 +70,15 @@ impl Transitions {
 
     /// Get next token transition counts
     pub fn next_tokens(&self, last_token: &Token) -> Option<&HashMap<Token, u32>> {
-        self.transitions.get(last_token)
+        match last_token {
+            Token::Token(_) => self.transitions.get(last_token),
+            Token::Boundary(_) => self.transitions.get(&Token::Boundary(String::from("")))
+        }
     }
 
     /// Get the Start transition counts
     pub fn start_tokens(&self) -> Option<&HashMap<Token, u32>> {
-        self.transitions.get(&Token::Boundary)
+        self.transitions.get(&Token::Boundary(String::from("")))
     }
 }
 
