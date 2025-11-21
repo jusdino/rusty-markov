@@ -1,8 +1,9 @@
 mod generator;
 mod token;
-mod tokenize;
+mod tokenizer;
 mod train;
 mod transitions;
+mod as_context;
 
 
 use clap::{command, Parser};
