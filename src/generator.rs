@@ -24,7 +24,7 @@ pub struct MarkovGenerator{
 /// use std::io::Cursor;
 /// use rusty_markov::{MarkovGenerator, BoundaryConfigs};
 ///
-/// let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+/// let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
 /// // This should force a predictable generation loop, since there is only one transition available
 /// // to each token
 /// let input = Cursor::new("start middle end");
@@ -38,10 +38,10 @@ pub struct MarkovGenerator{
 /// assert_eq!(tokens.len(), 4, "Should generate 3 tokens");
 /// ```
 impl MarkovGenerator {
-    pub fn new(boundary_config: BoundaryConfigs) -> Self {
+    pub fn new(boundary_config: BoundaryConfigs, order: usize) -> Self {
         Self {
             // TODO: Wire this into a cli-argument
-            order: 2,
+            order,
             boundary_config,
             transitions: Transitions::new(),
             rng: rand::rng(),
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_generator_properties_chain() {
-        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
         // This should force a predictable generation loop, since there is only one transition available
         // to each token
         let input = Cursor::new("1 2 3 4 5 6");
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_generator_empty_training() {
-        let generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
         // No training data
 
         // Should return None immediately
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_generator_dead_end_token() {
-        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
         let input = Cursor::new("start deadend");
         generator.train(input);
 

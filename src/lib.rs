@@ -29,4 +29,8 @@ pub struct Args {
     /// Boundary configuration for training
     #[arg(short, long, value_enum, default_value = "line-endings")]
     pub boundaries: BoundaryConfigs,
+
+    /// Chain context order
+    #[arg(short, long, default_value_t = 3)]
+    pub order: usize,
 }
