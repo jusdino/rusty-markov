@@ -7,7 +7,7 @@ probability model to generate some random text that sounds vageuely like the con
 
 Try it:
 ```sh
-cargo run -- --boundaries sentence-endings --order 2 <corpus-examples/moby-dick.txt 2>/dev/null
+$ cargo run -- --boundaries sentence-endings --order 2 <corpus-examples/moby-dick.txt 2>/dev/null
 The Parsee!” ” cried Ahab , in one corner ; when all at once to the forecastle .
 ```
 
