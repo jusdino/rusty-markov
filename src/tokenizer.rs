@@ -2,12 +2,76 @@
 //!
 //! Contains logic for tokenizing strings
 
+use std::{collections::VecDeque, io::BufRead};
 use crate::{token::Token, BoundaryConfigs};
 
 
-const SENTENCE_ENDINGS: [char; 3] = ['.', '!', '?'];
+const SENTENCE_ENDINGS: [char; 4] = ['.', '!', '?', '\n'];
 const PUNCTUATION_ENDINGS: [char; 10] = ['.', '!', '?', ',', ';', '"', '”', '\'', '}', ')'];
 const PUNCTUATION_BEGININGS: [char; 5] = ['"', '“', '\'', '{', '('];
+
+
+pub struct Tokenizer<R: BufRead> {
+    tokens: VecDeque<Token>,
+    boundary_config: BoundaryConfigs,
+    buf: R,
+}
+
+
+impl <R: BufRead>Tokenizer<R> {
+    pub fn new(input: R, boundary_config: BoundaryConfigs) -> Self {
+        Self {
+            tokens: VecDeque::from([Token::Boundary(String::from(""))]),
+            boundary_config,
+            buf: input,
+        }
+    }
+
+    /// Load more tokens from buf into the tokens vector
+    fn load_tokens(&mut self) {
+        // Keep reading lines until non-empty content is returned
+        for line_res in self.buf.by_ref().lines() {
+            match line_res {
+                Ok(line) => {
+                    let trimmed_line = line.trim();
+                    if trimmed_line.len() > 0 {
+                        self.tokens.extend(tokenize(&trimmed_line, &self.boundary_config));
+
+                        // If we're using LineEndings as boundary_config, push a Token::Boundary on the end
+                        if let BoundaryConfigs::LineEndings = self.boundary_config {
+                            self.tokens.push_back(Token::Boundary(String::from("\n")));
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error reading line: {}", e);
+                }
+            }
+            // We only want to read one non-empty line at a time into the tokens vector, so we'll break from the loop
+            // as soon as tokens has some content
+            if self.tokens.len() > 0 {
+                break;
+            }
+        }
+    }
+}
+
+impl <R: BufRead>Iterator for Tokenizer<R> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // If we have tokens, pop one
+        if let Some(val) = self.tokens.pop_front() {
+            return Some(val);
+        }
+        
+        // Otherwise, try to load more tokens
+        self.load_tokens();
+        
+        // After loading, try to pop again (or return None if still empty)
+        self.tokens.pop_front()
+    }
+}
 
 
 /// Takes an input line of text, returns the line broken up
@@ -127,7 +191,96 @@ fn split_out_punctuation_beginings(tokens: &mut Vec<Token>) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use super::*;
+
+    #[test]
+    fn test_tokenizer_with_line_endings() {
+
+        let input = Cursor::new("
+        I see a (little) silhouetto of a man.
+        Scaramouche, Scaramouche, will you do the Fandango?
+        ");
+
+        let tokenizer = Tokenizer::new(
+            input,
+            BoundaryConfigs::LineEndings
+        );
+
+        let tokens: Vec<Token> = tokenizer.collect();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Boundary(String::from("")),
+                Token::from("I"),
+                Token::from("see"),
+                Token::from("a"),
+                Token::from("("),
+                Token::from("little"),
+                Token::from(")"),
+                Token::from("silhouetto"),
+                Token::from("of"),
+                Token::from("a"),
+                Token::from("man"),
+                Token::from("."),
+                Token::Boundary(String::from("\n")),
+                Token::from("Scaramouche"),
+                Token::from(","),
+                Token::from("Scaramouche"),
+                Token::from(","),
+                Token::from("will"),
+                Token::from("you"),
+                Token::from("do"),
+                Token::from("the"),
+                Token::from("Fandango"),
+                Token::from("?"),
+                Token::Boundary(String::from("\n")),
+            ]
+        )
+    }
+
+    #[test]
+    fn test_tokenizer_with_sentence_endings() {
+
+        let input = Cursor::new("
+        I see a (little) silhouetto of a man.
+        Scaramouche, Scaramouche, will you do the Fandango?
+        ");
+
+        let tokenizer = Tokenizer::new(
+            input,
+            BoundaryConfigs::SentenceEndings,
+        );
+
+        let tokens: Vec<Token> = tokenizer.collect();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Boundary(String::from("")),
+                Token::from("I"),
+                Token::from("see"),
+                Token::from("a"),
+                Token::from("("),
+                Token::from("little"),
+                Token::from(")"),
+                Token::from("silhouetto"),
+                Token::from("of"),
+                Token::from("a"),
+                Token::from("man"),
+                Token::Boundary(String::from(".")),
+                Token::from("Scaramouche"),
+                Token::from(","),
+                Token::from("Scaramouche"),
+                Token::from(","),
+                Token::from("will"),
+                Token::from("you"),
+                Token::from("do"),
+                Token::from("the"),
+                Token::from("Fandango"),
+                Token::Boundary(String::from("?")),
+            ]
+        )
+    }
 
     #[test]
     fn test_tokenize_with_sentence_endings() {

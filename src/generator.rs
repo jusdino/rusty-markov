@@ -1,18 +1,20 @@
+use std::collections::VecDeque;
 use std::{collections::HashMap, io::BufRead};
 use rand::distr::Distribution;
 use rand::distr::weighted::WeightedIndex;
 
 use crate::token::Token;
-use crate::train::train_with_stream;
+use crate::train::train;
 use crate::transitions::Transitions;
 use crate::BoundaryConfigs;
 
 
-pub struct MarkovGenerator {
+pub struct MarkovGenerator{
+    order: usize,
     boundary_config: BoundaryConfigs,
-    token_transitions: Transitions,
+    transitions: Transitions,
     rng: rand::rngs::ThreadRng,
-    last_token: Token,
+    context: VecDeque<Token>,
 }
 
 /// Generates text, based on its traniing data, following a "markov chain" process
@@ -22,7 +24,7 @@ pub struct MarkovGenerator {
 /// use std::io::Cursor;
 /// use rusty_markov::{MarkovGenerator, BoundaryConfigs};
 ///
-/// let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+/// let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
 /// // This should force a predictable generation loop, since there is only one transition available
 /// // to each token
 /// let input = Cursor::new("start middle end");
@@ -36,32 +38,35 @@ pub struct MarkovGenerator {
 /// assert_eq!(tokens.len(), 4, "Should generate 3 tokens");
 /// ```
 impl MarkovGenerator {
-    pub fn new(boundary_config: BoundaryConfigs) -> Self {
+    pub fn new(boundary_config: BoundaryConfigs, order: usize) -> Self {
         Self {
+            // TODO: Wire this into a cli-argument
+            order,
             boundary_config,
-            token_transitions: Transitions::new(),
+            transitions: Transitions::new(),
             rng: rand::rng(),
-            last_token: Token::Boundary(String::from("")),
+            context: VecDeque::from([Token::Boundary(String::from(""))]),
         }
     }
 
     pub fn train<R: BufRead>(&mut self, input: R) {
-        train_with_stream(input, &mut self.token_transitions, &self.boundary_config);
+        train(input, &mut self.transitions, &self.boundary_config, self.order);
     }
 
     fn pick_next_token(&mut self) -> Option<&Token> {
-        eprintln!("Picking next token. last_token: {:?}", &self.last_token);
-        let next_transition_counts = match self.token_transitions.next_tokens(&self.last_token) {
+        let trans_for_ctx = match self.transitions.transitions_for_context(&self.context) {
             Some(p) => p,
             None => {
-                // If last_token is not in our token_transitions, stop now
+                // If nothing is not in our token_transitions, stop now
+                eprintln!("Failed to match any part of the context!");
+                self.context.push_back(Token::Boundary(String::from("\n")));
                 return None;
             }
         };
 
-        let (counts, tokens) = decompose_transitions(next_transition_counts);
+        let (counts, tokens) = decompose_transitions(trans_for_ctx);
 
-        eprintln!("Making random choice");
+        eprintln!("Making random choice from {} options", counts.len());
         let dist = match WeightedIndex::new(counts) {
             Ok(dist) => dist,
             Err(e) => {
@@ -71,8 +76,13 @@ impl MarkovGenerator {
             }
         };
         let next_token = tokens[dist.sample(&mut self.rng)];
+        self.context.push_back(next_token.clone());
 
-        eprintln!("Returning {:?}", next_token);
+        // Keep context window at order length, max
+        if self.context.len() > self.order {
+            self.context.pop_front();
+        }
+
         Some(next_token)
     }
 }
@@ -81,8 +91,10 @@ impl Iterator for MarkovGenerator {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // First check, if we've already returned a Boundary
-        if let Token::Boundary(value) = &self.last_token {
+        eprintln!("Next item with context: {:?}", self.context);
+
+        // First check, if we've already returned a Boundary (should never return None, so we unwrap)
+        if let Token::Boundary(value) = &self.context.back().unwrap() {
             // Initial state is a special Boundary("") - ignore that case
             eprintln!("last_token is a Boundary token");
             if value != "" {
@@ -91,16 +103,16 @@ impl Iterator for MarkovGenerator {
             }
         }
 
-        self.last_token = match self.pick_next_token() {
+        let next_token = match self.pick_next_token() {
             Some(token) => token.clone(),
             None => Token::Boundary(String::from("\n"))
         };
 
         // Wrap up a new Token for moving out
-        match &self.last_token {
-            Token::Token(value) => Some(value.clone()),
+        match next_token {
+            Token::Token(value) => Some(value),
             // self.last_token is now a Boundary, so next iteration will return None
-            Token::Boundary(value) => Some(value.clone()),
+            Token::Boundary(value) => Some(value),
         }
     }
 }
@@ -126,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_generator_properties_chain() {
-        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
         // This should force a predictable generation loop, since there is only one transition available
         // to each token
         let input = Cursor::new("1 2 3 4 5 6");
@@ -143,10 +155,11 @@ mod tests {
 
     #[test]
     fn test_generator_empty_training() {
-        let generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
         // No training data
 
         // Should return None immediately
+        eprintln!("Running generator with no training data");
         let tokens: Vec<String> = generator.collect();
         assert_eq!(
             vec!["\n"],
@@ -156,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_generator_dead_end_token() {
-        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings);
+        let mut generator = MarkovGenerator::new(BoundaryConfigs::LineEndings, 2);
         let input = Cursor::new("start deadend");
         generator.train(input);
 

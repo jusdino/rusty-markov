@@ -1,91 +1,13 @@
 //! train module
 //!
 //! Contains logic for training the transitions for token prediction
+use std::collections::VecDeque;
 use std::io::BufRead;
 
-use crate::token::Token;
-use crate::tokenize::tokenize;
+use crate::tokenizer::Tokenizer;
 use crate::transitions::Transitions;
 use crate::BoundaryConfigs;
 
-
-/// Read lines from buffer and train on token transitions
-pub fn train_with_stream<'a, R: BufRead>(
-    input: R, transitions: &'a mut Transitions, boundary_config: &BoundaryConfigs
-) -> &'a mut Transitions {
-
-    // We don't really care about breaking this up into lines, but going lower-level would mean
-    // messing with reading raw bytes out of the buffer, just to reconstruct them back into utf-8
-    // which would be tedious and inefficient.
-    // Instead, we'll read strings out of the buffer, line-by-line, then stitch the end of one
-    // line to the beginning of the next
-
-    // We need a boundary to start from, else we have no transitions for the very begining of our text.
-    let mut last_token: Token = Token::Boundary(String::from(""));
-    for line_res in input.lines() {
-        let mut tokens: Vec<Token> = Vec::new();
-
-        // Preserve the transition from the last line by pushing last_token
-        tokens.push(match last_token {
-            // In the case of a Boundary, we deliberately mask the value, so all Boundary transitions _start_ from a
-            // a single Boundary value - an empty string. This allows more opportunities for the chain options to
-            // branch at the start of generation (and across boundaries, if we update the generator to continue after
-            // its first).
-            Token::Boundary(_) => Token::Boundary(String::from("")),
-            Token::Token(_) => last_token.clone()
-        });
-
-        match line_res {
-            Ok(line) => {
-                // Check if line has content before tokenizing
-                let has_content = !line.trim().is_empty();
-                let tokens_before = tokens.len();
-
-                tokens.extend(tokenize(&line, boundary_config));
-
-                if let BoundaryConfigs::SentenceEndings = boundary_config {
-                    // Save the last token for the next line
-                    let tokens_len = tokens.len();
-                    if tokens_len > 0 {
-                        last_token = match tokens.get(tokens_len-1) {
-                            Some(t) => t.clone(),
-                            None => Token::Boundary(String::from("\n"))
-                        };
-                    }
-                }
-
-                // If we're using LineEndings as boundary_config, push a Token::Boundary on the end
-                if let BoundaryConfigs::LineEndings = boundary_config {
-                    tokens.push(Token::Boundary(String::from("\n")));
-                    // Only update last_token if the line had actual content
-                    // This prevents empty lines from breaking the boundary chain
-                    if has_content && tokens.len() > tokens_before + 1 {
-                        last_token = Token::Boundary(String::from("\n"));
-                    }
-                }
-            },
-            Err(e) => {
-                eprintln!("Error reading line: {}", e);
-            }
-        }
-
-        train_with_tokens(tokens, transitions);
-    }
-
-    // Log memory usage when memory-profiling feature is enabled
-    #[cfg(feature = "memory-profiling")]
-    {
-        use memuse::DynamicUsage;
-        let estimated_size = transitions.dynamic_usage();
-        eprintln!(
-            "Estimated transitions HashMap memory usage: {} bytes ({:.2} MB)", 
-            estimated_size,
-            estimated_size as f64 / 1_048_576.0
-        );
-    }
-
-    transitions
-}
 
 /// Input tokens and add transitions to existing map
 ///
@@ -104,27 +26,31 @@ pub fn train_with_stream<'a, R: BufRead>(
 ///     }
 /// }
 /// ```
-pub fn train_with_tokens(
-    tokens: Vec<Token>, transitions: &mut Transitions 
-) -> &mut Transitions {
-    let mut tokens_iter = tokens.iter();
+pub fn train<'a, R: BufRead>(
+    input: R,
+    transitions: &'a mut Transitions,
+    boundary_config: &BoundaryConfigs,
+    order: usize
+) -> &'a mut Transitions {
+    let tokenizer = Tokenizer::new(
+        input,
+        boundary_config.clone(),
+    );
 
-    // Get the first token
-    let mut last_token = match tokens_iter.next() {
-        Some(token) => token.clone(),
-        // If we don't get any tokens, there's no transition to add
-        None => return transitions
-    };
+    let mut tokens = VecDeque::new();
+    for next_token in tokenizer {
+        let token_length = tokens.len();
 
-    for next_token in tokens_iter {
-        match (&last_token, next_token) {
-            // Specifically suppress Boundary->Boundary transitions caused by things like empty lines
-            (Token::Boundary(_), Token::Boundary(_)) => (),
-            _ => transitions.count_transition(&last_token, next_token)
-        };
+        if token_length > 0 {
+            transitions.count_transition(&tokens, &next_token);
+            // Build up to `order` length, then maintain that till we're done
+            if token_length >= order {  // '>=' instead of '>' here because we add 1 later
+                tokens.pop_front();
+            }
+        }
 
-        // Shift next to last for next iteration
-        last_token = next_token.clone();
+        tokens.push_back(next_token);
+
     }
 
     transitions
@@ -134,8 +60,43 @@ pub fn train_with_tokens(
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, io::Cursor};
-    use super::*;
+    use crate::token::Token;
+    use crate::transitions::Transitions;
+    use crate::BoundaryConfigs;
+    use crate::train::train;
 
+
+    #[test]
+    fn test_train_something_simple() {
+        let input = Cursor::new("
+        One two three.
+        ");
+
+        let mut transitions = Transitions::new();
+        train(
+            input,
+            &mut transitions,
+            &BoundaryConfigs::LineEndings,
+            2
+        );
+
+        assert_eq!(
+            Transitions::with_data(
+                HashMap::from([
+                    (vec![Token::Boundary(String::from(""))], HashMap::from([(Token::from("One"), 1)])),
+                    (vec![Token::from("One")], HashMap::from([(Token::from("two"), 1)])),
+                    (vec![Token::Boundary(String::from("")), Token::from("One")], HashMap::from([(Token::from("two"), 1)])),
+                    (vec![Token::from("two")], HashMap::from([(Token::from("three"), 1)])),
+                    (vec![Token::from("One"), Token::from("two")], HashMap::from([(Token::from("three"), 1)])),
+                    (vec![Token::from("three")], HashMap::from([(Token::from("."), 1)])),
+                    (vec![Token::from("two"), Token::from("three")], HashMap::from([(Token::from("."), 1)])),
+                    (vec![Token::from(".")], HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
+                    (vec![Token::from("three"), Token::from(".")], HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
+                ])
+            ),
+            transitions,
+        );
+    }
 
     #[test]
     fn test_tokenize_song_line_endings() {
@@ -146,29 +107,51 @@ mod tests {
         ");
 
         let mut transitions = Transitions::new();
-        train_with_stream(input, &mut transitions, &BoundaryConfigs::LineEndings);
+        train(input, &mut transitions, &BoundaryConfigs::LineEndings, 2);
 
         assert_eq!(
             transitions,
-            HashMap::from([
-            (Token::Boundary(String::from("")), HashMap::from([(Token::from("I"), 1), (Token::from("Scaramouche"), 1)])),
-            (Token::from("I"), HashMap::from([(Token::from("see"), 1)])),
-            (Token::from("see"), HashMap::from([(Token::from("a"), 1)])),
-            (Token::from("a"), HashMap::from([(Token::from("little"), 1), (Token::from("man"), 1)])),
-            (Token::from("little"), HashMap::from([(Token::from("silhouetto"), 1)])),
-            (Token::from("silhouetto"), HashMap::from([(Token::from("of"), 1)])),
-            (Token::from("of"), HashMap::from([(Token::from("a"), 1)])),
-            (Token::from("man"), HashMap::from([(Token::from("."), 1)])),
-            (Token::from("."), HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
-            (Token::from("Scaramouche"), HashMap::from([(Token::from(","), 2)])),
-            (Token::from(","), HashMap::from([(Token::from("Scaramouche"), 1), (Token::from("will"), 1)])),
-            (Token::from("will"), HashMap::from([(Token::from("you"), 1)])),
-            (Token::from("you"), HashMap::from([(Token::from("do"), 1)])),
-            (Token::from("do"), HashMap::from([(Token::from("the"), 1)])),
-            (Token::from("the"), HashMap::from([(Token::from("Fandango"), 1)])),
-            (Token::from("Fandango"), HashMap::from([(Token::from("?"), 1)])),
-            (Token::from("?"), HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
-            ])
+            Transitions::with_data(
+                HashMap::from([
+                    (vec![Token::Boundary(String::from(""))], HashMap::from([(Token::from("I"), 1), (Token::from("Scaramouche"), 1)])),
+                    (vec![Token::from("I")], HashMap::from([(Token::from("see"), 1)])),
+                    (vec![Token::from("see")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("a")], HashMap::from([(Token::from("little"), 1), (Token::from("man"), 1)])),
+                    (vec![Token::from("little")], HashMap::from([(Token::from("silhouetto"), 1)])),
+                    (vec![Token::from("silhouetto")], HashMap::from([(Token::from("of"), 1)])),
+                    (vec![Token::from("of")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("man")], HashMap::from([(Token::from("."), 1)])),
+                    (vec![Token::from(".")], HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
+                    (vec![Token::Boundary(String::from("\n"))], HashMap::from([(Token::from("Scaramouche"), 1)])),
+                    (vec![Token::from("Scaramouche")], HashMap::from([(Token::from(","), 2)])),
+                    (vec![Token::from(",")], HashMap::from([(Token::from("Scaramouche"), 1), (Token::from("will"), 1)])),
+                    (vec![Token::from("will")], HashMap::from([(Token::from("you"), 1)])),
+                    (vec![Token::from("you")], HashMap::from([(Token::from("do"), 1)])),
+                    (vec![Token::from("do")], HashMap::from([(Token::from("the"), 1)])),
+                    (vec![Token::from("the")], HashMap::from([(Token::from("Fandango"), 1)])),
+                    (vec![Token::from("Fandango")], HashMap::from([(Token::from("?"), 1)])),
+                    (vec![Token::from("?")], HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
+                    (vec![Token::Boundary(String::from("")), Token::from("I")], HashMap::from([(Token::from("see"), 1)])),
+                    (vec![Token::from("I"), Token::from("see")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("see"), Token::from("a")], HashMap::from([(Token::from("little"), 1)])),
+                    (vec![Token::from("a"), Token::from("little")], HashMap::from([(Token::from("silhouetto"), 1)])),
+                    (vec![Token::from("little"), Token::from("silhouetto")], HashMap::from([(Token::from("of"), 1)])),
+                    (vec![Token::from("silhouetto"), Token::from("of")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("of"), Token::from("a")], HashMap::from([(Token::from("man"), 1)])),
+                    (vec![Token::from("a"), Token::from("man")], HashMap::from([(Token::from("."), 1)])),
+                    (vec![Token::from("man"), Token::from(".")], HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
+                    (vec![Token::from("."), Token::Boundary(String::from("\n"))], HashMap::from([(Token::from("Scaramouche"), 1)])),
+                    (vec![Token::Boundary(String::from("\n")), Token::from("Scaramouche")], HashMap::from([(Token::from(","), 1)])),
+                    (vec![Token::from("Scaramouche"), Token::from(",")], HashMap::from([(Token::from("Scaramouche"), 1), (Token::from("will"), 1)])),
+                    (vec![Token::from(","), Token::from("Scaramouche")], HashMap::from([(Token::from(","), 1)])),
+                    (vec![Token::from(","), Token::from("will")], HashMap::from([(Token::from("you"), 1)])),
+                    (vec![Token::from("will"), Token::from("you")], HashMap::from([(Token::from("do"), 1)])),
+                    (vec![Token::from("you"), Token::from("do")], HashMap::from([(Token::from("the"), 1)])),
+                    (vec![Token::from("do"), Token::from("the")], HashMap::from([(Token::from("Fandango"), 1)])),
+                    (vec![Token::from("the"), Token::from("Fandango")], HashMap::from([(Token::from("?"), 1)])),
+                    (vec![Token::from("Fandango"), Token::from("?")], HashMap::from([(Token::Boundary(String::from("\n")), 1)])),
+                ]),
+            )
         )
     }
 
@@ -181,56 +164,47 @@ mod tests {
         ");
 
         let mut transitions = Transitions::new();
-        train_with_stream(input, &mut transitions, &BoundaryConfigs::SentenceEndings);
+        train(input, &mut transitions, &BoundaryConfigs::SentenceEndings, 2);
 
         assert_eq!(
             transitions,
-            HashMap::from([
-            (Token::Boundary(String::from("")), HashMap::from([(Token::from("I"), 1), (Token::from("Scaramouche"), 1)])),
-            (Token::from("I"), HashMap::from([(Token::from("see"), 1)])),
-            (Token::from("see"), HashMap::from([(Token::from("a"), 1)])),
-            (Token::from("a"), HashMap::from([(Token::from("little"), 1), (Token::from("man"), 1)])),
-            (Token::from("silhouetto"), HashMap::from([(Token::from("of"), 1)])),
-            (Token::from("of"), HashMap::from([(Token::from("a"), 1)])),
-            (Token::from("little"), HashMap::from([(Token::from("silhouetto"), 1)])),
-            (Token::from("man"), HashMap::from([(Token::Boundary(String::from(".")), 1)])),
-            (Token::from("Scaramouche"), HashMap::from([(Token::from(","), 2)])),
-            (Token::from(","), HashMap::from([(Token::from("Scaramouche"), 1), (Token::from("will"), 1)])),
-            (Token::from("will"), HashMap::from([(Token::from("you"), 1)])),
-            (Token::from("you"), HashMap::from([(Token::from("do"), 1)])),
-            (Token::from("do"), HashMap::from([(Token::from("the"), 1)])),
-            (Token::from("the"), HashMap::from([(Token::from("Fandango"), 1)])),
-            (Token::from("Fandango"), HashMap::from([(Token::Boundary(String::from("?")), 1)])),
-            ])
+            Transitions::with_data(
+                HashMap::from([
+                    (vec![Token::Boundary(String::from(""))], HashMap::from([(Token::from("I"), 1), (Token::from("Scaramouche"), 1)])),
+                    (vec![Token::from("I")], HashMap::from([(Token::from("see"), 1)])),
+                    (vec![Token::from("see")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("a")], HashMap::from([(Token::from("little"), 1), (Token::from("man"), 1)])),
+                    (vec![Token::from("silhouetto")], HashMap::from([(Token::from("of"), 1)])),
+                    (vec![Token::from("of")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("little")], HashMap::from([(Token::from("silhouetto"), 1)])),
+                    (vec![Token::from("man")], HashMap::from([(Token::Boundary(String::from(".")), 1)])),
+                    (vec![Token::Boundary(String::from("."))], HashMap::from([(Token::from("Scaramouche"), 1)])),
+                    (vec![Token::from("Scaramouche")], HashMap::from([(Token::from(","), 2)])),
+                    (vec![Token::from(",")], HashMap::from([(Token::from("Scaramouche"), 1), (Token::from("will"), 1)])),
+                    (vec![Token::from("will")], HashMap::from([(Token::from("you"), 1)])),
+                    (vec![Token::from("you")], HashMap::from([(Token::from("do"), 1)])),
+                    (vec![Token::from("do")], HashMap::from([(Token::from("the"), 1)])),
+                    (vec![Token::from("the")], HashMap::from([(Token::from("Fandango"), 1)])),
+                    (vec![Token::from("Fandango")], HashMap::from([(Token::Boundary(String::from("?")), 1)])),
+                    (vec![Token::Boundary(String::from("")), Token::from("I")], HashMap::from([(Token::from("see"), 1)])),
+                    (vec![Token::from("I"), Token::from("see")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("see"), Token::from("a")], HashMap::from([(Token::from("little"), 1)])),
+                    (vec![Token::from("a"), Token::from("little")], HashMap::from([(Token::from("silhouetto"), 1)])),
+                    (vec![Token::from("little"), Token::from("silhouetto")], HashMap::from([(Token::from("of"), 1)])),
+                    (vec![Token::from("silhouetto"), Token::from("of")], HashMap::from([(Token::from("a"), 1)])),
+                    (vec![Token::from("of"), Token::from("a")], HashMap::from([(Token::from("man"), 1)])),
+                    (vec![Token::from("a"), Token::from("man")], HashMap::from([(Token::Boundary(String::from(".")), 1)])),
+                    (vec![Token::from("man"), Token::Boundary(String::from("."))], HashMap::from([(Token::from("Scaramouche"), 1)])),
+                    (vec![Token::Boundary(String::from(".")), Token::from("Scaramouche")], HashMap::from([(Token::from(","), 1)])),
+                    (vec![Token::from("Scaramouche"), Token::from(",")], HashMap::from([(Token::from("Scaramouche"), 1), (Token::from("will"), 1)])),
+                    (vec![Token::from(","), Token::from("Scaramouche")], HashMap::from([(Token::from(","), 1)])),
+                    (vec![Token::from(","), Token::from("will")], HashMap::from([(Token::from("you"), 1)])),
+                    (vec![Token::from("will"), Token::from("you")], HashMap::from([(Token::from("do"), 1)])),
+                    (vec![Token::from("you"), Token::from("do")], HashMap::from([(Token::from("the"), 1)])),
+                    (vec![Token::from("do"), Token::from("the")], HashMap::from([(Token::from("Fandango"), 1)])),
+                    (vec![Token::from("the"), Token::from("Fandango")], HashMap::from([(Token::Boundary(String::from("?")), 1)])),
+                ])
+            )
         )
-    }
-
-    #[test]
-    fn test_train_with_tokens_populates_transitions_map() {
-        let mut transitions = Transitions::new();
-        let tokens = vec![
-            Token::from("I"),
-            Token::from("see"),
-            Token::from("a"),
-            Token::from("little"),
-            Token::from("silhouetto"),
-            Token::from("of"),
-            Token::from("a"),
-            Token::from("man.")
-        ];
-
-        train_with_tokens(tokens, &mut transitions);
-
-        assert_eq!(
-            transitions,
-            HashMap::from([
-                (Token::from("I"), HashMap::from([(Token::from("see"), 1)])),
-                (Token::from("see"), HashMap::from([(Token::from("a"), 1)])),
-                (Token::from("a"), HashMap::from([(Token::from("little"), 1), (Token::from("man."), 1)])),
-                (Token::from("little"), HashMap::from([(Token::from("silhouetto"), 1)])),
-                (Token::from("silhouetto"), HashMap::from([(Token::from("of"), 1)])),
-                (Token::from("of"), HashMap::from([(Token::from("a"), 1)])),
-            ])
-        );
     }
 }
